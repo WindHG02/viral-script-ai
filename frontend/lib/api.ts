@@ -2,9 +2,16 @@
 // Đảm bảo không bao giờ bị lỗi CORS hay lỗi phân giải IPv6 localhost trên Windows
 
 export async function apiFetch(path: string, options?: RequestInit): Promise<Response> {
-  const cleanPath = path.startsWith("/") ? path : `/${path}`;
-  const directUrl = `http://127.0.0.1:8000/api${cleanPath}`;
-  const proxyUrl = `/pyapi${cleanPath}`;
+  // Chuẩn hóa path: tự động bỏ tiền tố /api nếu caller truyền vào để tránh bị trùng thành /api/api/...
+  let subPath = path.startsWith("/") ? path : `/${path}`;
+  if (subPath.startsWith("/api/")) {
+    subPath = subPath.substring(4); // Giữ lại từ dấu / trở đi
+  } else if (subPath === "/api") {
+    subPath = "";
+  }
+
+  const directUrl = `http://127.0.0.1:8000/api${subPath}`;
+  const proxyUrl = `/pyapi${subPath}`;
 
   try {
     const res = await fetch(directUrl, options);
@@ -14,3 +21,4 @@ export async function apiFetch(path: string, options?: RequestInit): Promise<Res
     return await fetch(proxyUrl, options);
   }
 }
+

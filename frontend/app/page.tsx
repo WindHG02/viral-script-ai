@@ -10,9 +10,12 @@ import HistoryModal from "@/components/HistoryModal";
 import PaywallModal from "@/components/PaywallModal";
 import PippitShowcase from "@/components/PippitShowcase";
 import TemplatesModal from "@/components/TemplatesModal";
+import FeedbackModal from "@/components/FeedbackModal";
+import ChatBot from "@/components/ChatBot";
 import { apiFetch } from "@/lib/api";
 import { supabase } from "@/lib/supabaseClient";
 import { Sparkles, Link as LinkIcon, Loader2, AlertCircle, CheckCircle2, ShieldAlert } from "lucide-react";
+
 
 export default function Home() {
   const [videoUrl, setVideoUrl] = useState("");
@@ -36,21 +39,40 @@ export default function Home() {
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isPaywallOpen, setIsPaywallOpen] = useState(false);
   const [isTemplatesOpen, setIsTemplatesOpen] = useState(false);
+  const [isFeedbackOpen, setIsFeedbackOpen] = useState(false);
+
 
   const playerRef = useRef<any>(null);
 
-  // Đồng bộ số lượt của người dùng từ Supabase
+  // Đồng bộ số lượt của người dùng từ Supabase & tự động hồi phục 3 lượt mỗi ngày
   const refreshUserProfile = async (userId: string) => {
     try {
+      const todayStr = new Date().toISOString().split("T")[0]; // Định dạng YYYY-MM-DD theo giờ hiện tại
+
       const { data, error } = await supabase
         .from("profiles")
-        .select("daily_credits, subscription_tier")
+        .select("daily_credits, subscription_tier, last_reset_date")
         .eq("id", userId)
         .single();
 
       if (data && !error) {
-        const credits = data.daily_credits ?? 3;
+        let credits = data.daily_credits ?? 3;
         const tier = data.subscription_tier ?? "free";
+        const lastReset = data.last_reset_date;
+
+        // Nếu bước sang ngày mới và là tài khoản Free: tự động nạp lại 3 lượt miễn phí
+        if (tier !== "pro" && (!lastReset || String(lastReset) < todayStr)) {
+          credits = 3;
+          try {
+            await supabase
+              .from("profiles")
+              .update({ daily_credits: 3, last_reset_date: todayStr })
+              .eq("id", userId);
+          } catch (updateErr) {
+            console.warn("Không thể đồng bộ ngày reset lên Supabase:", updateErr);
+          }
+        }
+
         setUserCredits(credits);
         setUserTier(tier);
         // Pro tier không giới hạn; free tier lấy max(credits hiện tại, 3) làm mốc ban đầu
@@ -60,6 +82,7 @@ export default function Home() {
       console.error("Lỗi khi đọc profile:", err);
     }
   };
+
 
   useEffect(() => {
     // 1. Kiểm tra số lượt khách vãng lai đã dùng trong localStorage
@@ -256,6 +279,7 @@ export default function Home() {
         onOpenHistory={() => setIsHistoryOpen(true)}
         onOpenPaywall={() => setIsPaywallOpen(true)}
         onOpenTemplates={() => setIsTemplatesOpen(true)}
+        onOpenFeedback={() => setIsFeedbackOpen(true)}
         onResetHome={handleResetHome}
         onSignOut={handleSignOut}
       />
@@ -462,6 +486,18 @@ export default function Home() {
           setMaxCredits(tier === "pro" ? 9999 : credits);
         }}
       />
+
+      {/* MODAL ĐÁNH GIÁ PHẢN HỒI */}
+      <FeedbackModal
+        isOpen={isFeedbackOpen}
+        onClose={() => setIsFeedbackOpen(false)}
+        userId={user?.id}
+        userEmail={user?.email}
+        accessToken={session?.access_token}
+      />
+
+      {/* CHATBOT NỔI GÓC PHẢI — hỗ trợ người dùng 24/7 */}
+      <ChatBot userId={user?.id} />
     </main>
   );
 }

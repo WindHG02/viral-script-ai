@@ -31,6 +31,8 @@ interface NavbarProps {
   onOpenHistory?: () => void;
   onOpenPaywall?: () => void;
   onOpenTemplates?: () => void;
+  onOpenFeedback?: () => void;
+  onOpenChat?: () => void;
   onResetHome?: () => void;
   onSignOut?: () => void;
 }
@@ -44,6 +46,8 @@ export default function Navbar({
   onOpenHistory,
   onOpenPaywall,
   onOpenTemplates,
+  onOpenFeedback,
+  onOpenChat,
   onResetHome,
   onSignOut,
 }: NavbarProps) {
@@ -87,10 +91,7 @@ export default function Navbar({
 
   const handleProvideFeedback = () => {
     setIsDropdownOpen(false);
-    const feedback = window.prompt("Nhập ý kiến đóng góp của bạn về ViralScript AI:");
-    if (feedback) {
-      triggerToast("Cảm ơn bạn đã gửi đóng góp phản hồi quý giá!");
-    }
+    onOpenFeedback?.();
   };
 
   const handleChatSupport = () => {
