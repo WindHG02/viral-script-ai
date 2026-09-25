@@ -10,6 +10,8 @@ CREATE TABLE IF NOT EXISTS public.profiles (
   full_name TEXT,
   avatar_url TEXT,
   daily_credits INT DEFAULT 3,
+  last_reset_date DATE DEFAULT CURRENT_DATE,    -- Ngày reset lượt cuối (so sánh để reset hàng ngày)
+  subscription_tier TEXT DEFAULT 'free',         -- 'free' | 'pro'
   created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::TEXT, NOW()) NOT NULL
 );
 
@@ -81,9 +83,9 @@ CREATE TRIGGER on_auth_user_created
   FOR EACH ROW EXECUTE PROCEDURE public.handle_new_user();
 
 -- 7. QUẢN LÝ HẠN MỨC (QUOTA) & NẠP LƯỢT (PAYMENT TRANSACTIONS)
-ALTER TABLE public.profiles 
-ADD COLUMN IF NOT EXISTS last_reset_date DATE DEFAULT CURRENT_DATE,
-ADD COLUMN IF NOT EXISTS subscription_tier TEXT DEFAULT 'free';
+-- Đảm bảo cột luôn tồn tại dù schema đã chạy từ phiên bản cũ
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS last_reset_date DATE DEFAULT CURRENT_DATE;
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS subscription_tier TEXT DEFAULT 'free';
 
 -- Hàm trừ lượt an toàn nguyên tử (Atomic - chống race condition khi bấm đồng thời)
 CREATE OR REPLACE FUNCTION public.deduct_user_credit(p_user_id UUID)
@@ -186,3 +188,23 @@ END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 
+-- 8. BẢNG LƯU ĐÁNH GIÁ NGƯỜI DÙNG (FEEDBACK)
+CREATE TABLE IF NOT EXISTS public.feedback (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id UUID REFERENCES public.profiles(id) ON DELETE SET NULL,  -- NULL nếu khách chưa đăng nhập
+  email TEXT,                    -- Email tự nhập (dùng khi khách vãng lai)
+  rating INT CHECK (rating BETWEEN 1 AND 5),  -- 1-5 sao
+  message TEXT NOT NULL,         -- Nội dung đánh giá
+  page_context TEXT,             -- Trang hoặc tính năng đang dùng khi gửi feedback
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::TEXT, NOW()) NOT NULL
+);
+
+ALTER TABLE public.feedback ENABLE ROW LEVEL SECURITY;
+
+-- Ai cũng được phép gửi feedback (kể cả khách chưa đăng nhập)
+DROP POLICY IF EXISTS "Anyone can insert feedback" ON public.feedback;
+CREATE POLICY "Anyone can insert feedback" ON public.feedback FOR INSERT WITH CHECK (true);
+
+-- Chỉ user xem được feedback của chính mình
+DROP POLICY IF EXISTS "User can view own feedback" ON public.feedback;
+CREATE POLICY "User can view own feedback" ON public.feedback FOR SELECT USING (auth.uid() = user_id);
