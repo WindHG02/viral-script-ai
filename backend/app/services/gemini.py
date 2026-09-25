@@ -8,15 +8,18 @@ from google.genai.errors import APIError, ServerError
 from app.core.config import settings
 
 # Danh sách mô hình Gemini theo thứ tự ưu tiên (Tự động chuyển cấp khi một model chạm hạn mức 429 hoặc 503)
-# Tên model phải khớp chính xác với Google AI API — xem tại: https://ai.google.dev/gemini-api/docs/models/gemini
+# Danh sách này đã được kiểm tra trực tiếp qua API client.models.list()
 GEMINI_MODELS_CASCADE = [
-    "gemini-2.5-flash",           # Mạnh nhất trong Free tier — ưu tiên trước
-    "gemini-2.5-flash-lite",      # Nhẹ hơn, quota cao hơn
-    "gemini-2.0-flash",           # Fallback khi 2.5 hết quota
-    "gemini-2.0-flash-lite",      # Quota rộng nhất
-    "gemini-1.5-flash",           # Dự phòng thế hệ trước
-    "gemini-1.5-flash-8b",        # Nhỏ nhất, quota cao nhất — cuối hàng
+    "gemini-3.5-flash",           # Rất nhanh, ổn định cao
+    "gemini-3.5-flash-lite",      # Nhẹ hơn, quota cao
+    "gemini-3.6-flash",           # Bản kế tiếp
+    "gemini-3.7-flash",           # Bản nâng cao
+    "gemini-3.8-flash",           # Bản mới nhất
+    "gemini-3.1-flash-lite",      # Dự phòng
+    "gemini-flash-latest",        # Alias tự động trỏ bản mới nhất
+    "gemini-flash-lite-latest"    # Alias bản lite mới nhất
 ]
+
 
 def clean_json_response(raw_text: str) -> str:
     """

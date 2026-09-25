@@ -70,6 +70,19 @@ class ConfirmOrderRequest(BaseModel):
     user_id: str
     order_code: str
 
+class FeedbackRequest(BaseModel):
+    message: str
+    rating: Optional[int] = None       # 1-5 sao, optional
+    email: Optional[str] = None        # Email khách vãng lai
+    user_id: Optional[str] = None
+    page_context: Optional[str] = None # Trang đang dùng khi gửi feedback
+
+class ChatRequest(BaseModel):
+    message: str
+    user_id: Optional[str] = None
+    conversation_history: Optional[list] = []  # Lịch sử hội thoại để giữ ngữ cảnh
+
+
 # ─── CÁC CỔNG GIAO TIẾP API (ENDPOINTS) ─────────────────────────────────────────
 
 @app.get("/")
@@ -317,4 +330,180 @@ async def confirm_payment_order(
         "tier": res.get("tier")
     }
 
+
+# ─── ENDPOINT 5: GỬI PHẢN HỒI / ĐÁNH GIÁ (FEEDBACK) ─────────────────────────────
+@app.post("/api/feedback")
+async def submit_feedback(
+    request: FeedbackRequest,
+    authorization: Optional[str] = Header(None)
+):
+    """
+    Nhận đánh giá từ người dùng và lưu vào bảng feedback trong Supabase.
+    Hỗ trợ cả khách vãng lai (user_id = None) và tài khoản đã đăng nhập.
+    """
+    from app.services.db import get_supabase_client
+
+    # Validate rating nếu có
+    if request.rating is not None and not (1 <= request.rating <= 5):
+        raise HTTPException(status_code=422, detail="Rating phải nằm trong khoảng 1 đến 5.")
+
+    # Kiểm tra message không được rỗng
+    message = request.message.strip()
+    if not message or len(message) < 5:
+        raise HTTPException(status_code=422, detail="Nội dung đánh giá quá ngắn. Vui lòng nhập tối thiểu 5 ký tự.")
+    if len(message) > 2000:
+        raise HTTPException(status_code=422, detail="Nội dung đánh giá vượt quá 2000 ký tự.")
+
+    jwt_token = authorization.split("Bearer ")[1].strip() if authorization and authorization.startswith("Bearer ") else None
+    supabase = get_supabase_client(jwt_token=jwt_token)
+
+    if supabase:
+        try:
+            feedback_data = {
+                "message": message,
+                "rating": request.rating,
+                "email": request.email,
+                "user_id": request.user_id,
+                "page_context": request.page_context or "general",
+            }
+            supabase.table("feedback").insert(feedback_data).execute()
+        except Exception as e:
+            print(f"Lỗi lưu feedback: {e}")
+            # Không raise lỗi — feedback không được làm crash trải nghiệm user
+
+    return {"status": "success", "message": "Cảm ơn bạn đã gửi đánh giá!"}
+
+
+# ─── ENDPOINT 6: CHATBOT HỖ TRỢ NGƯỜI DÙNG ──────────────────────────────────────
+# System prompt mô tả đầy đủ tính năng ViralScript AI để chatbot trả lời đúng ngữ cảnh
+CHATBOT_SYSTEM_PROMPT = """Bạn là ViralBot — trợ lý AI hỗ trợ người dùng ứng dụng ViralScript AI.
+
+ViralScript AI là công cụ giúp phân tích kịch bản video ngắn viral (TikTok, YouTube Shorts, Instagram Reels) và tái cấu trúc kịch bản cho video mới.
+
+Các tính năng chính của ViralScript AI:
+1. **Phân Tích Script**: Dán link video TikTok/YouTube Shorts/Reels → AI bóc tách toàn bộ cấu trúc: Hook 3 giây, kỹ thuật giữ chân, CTA
+2. **Remix Kịch Bản**: Sau khi phân tích, tạo 3 kịch bản mới theo ngành hàng khác nhau (UGC bán hàng, Tech, Drama, F&B...)
+3. **Teleprompter**: Máy nhắc chữ tích hợp để quay video ngay sau khi có kịch bản
+4. **Thư Viện Mẫu**: Bộ công thức kịch bản Hook-Body-CTA đã được chứng minh hiệu quả
+5. **Lịch Sử Kịch Bản**: Lưu và xem lại các phân tích đã thực hiện
+
+Hệ thống lượt dùng:
+- Khách vãng lai: 2 lượt thử miễn phí
+- Tài khoản free: 3 lượt mỗi ngày (tự động hồi phục lúc 0h hàng ngày)
+- Gói lẻ: Nạp từ 5.000đ/lượt
+- Gói Pro VIP (99k/tháng): Không giới hạn lượt
+
+Định dạng trả lời:
+- Trả lời bằng tiếng Việt đầy đủ, trọn vẹn ý nghĩa, rõ ràng, thân thiện và thực tế. Luôn hoàn thành toàn bộ câu trả lời, tuyệt đối không ngắt quãng giữa chừng.
+- Trình bày mạch lạc, có thể dùng gạch đầu dòng ngắn khi liệt kê tính năng hoặc gói cước để người dùng dễ đọc.
+- Nếu không biết hoặc vấn đề kỹ thuật sâu, hãy hướng dẫn user liên hệ hỗ trợ qua Zalo/Hotline 0834.490.939.
+- Không bịa đặt thông tin hoặc tính năng không có trong danh sách trên.
+"""
+
+@app.post("/api/chat")
+async def chat_with_bot(request: ChatRequest):
+    """
+    Chatbot hỗ trợ người dùng sử dụng ViralScript AI.
+    Dùng Gemini (google-genai SDK) để trả lời câu hỏi trong ngữ cảnh ứng dụng.
+    Hỗ trợ lịch sử hội thoại để giữ ngữ cảnh xuyên suốt phiên chat.
+    """
+    from google import genai as google_genai
+    from google.genai import types as genai_types
+    from app.core.config import settings
+
+    user_message = request.message.strip()
+    if not user_message:
+        raise HTTPException(status_code=422, detail="Câu hỏi không được để trống.")
+    if len(user_message) > 500:
+        raise HTTPException(status_code=422, detail="Câu hỏi quá dài. Vui lòng rút gọn xuống dưới 500 ký tự.")
+
+    # Kiểm tra GEMINI_API_KEY hợp lệ
+    if not settings.GEMINI_API_KEY or "your-gemini-key" in settings.GEMINI_API_KEY or settings.GEMINI_API_KEY.startswith("your_"):
+        return {
+            "reply": "Xin lỗi, chatbot chưa được kích hoạt. Vui lòng liên hệ hỗ trợ qua Zalo 0834.490.939.",
+            "status": "config_error"
+        }
+
+    try:
+        client = google_genai.Client(api_key=settings.GEMINI_API_KEY)
+
+        # Xây dựng lịch sử hội thoại dạng list contents cho SDK google-genai
+        # Mỗi turn là dict {"role": "user"|"model", "parts": [{"text": "..."}]}
+        contents = []
+        for turn in (request.conversation_history or [])[-8:]:  # Giữ tối đa 8 lượt gần nhất
+            role = turn.get("role")
+            content = turn.get("content", "").strip()
+            if role in ("user", "model") and content:
+                contents.append(
+                    genai_types.Content(
+                        role=role,
+                        parts=[genai_types.Part(text=content)]
+                    )
+                )
+
+        # Thêm câu hỏi hiện tại vào cuối
+        contents.append(
+            genai_types.Content(
+                role="user",
+                parts=[genai_types.Part(text=user_message)]
+            )
+        )
+
+        # Thử lần lượt các model từ cascade (ưu tiên các model đang hoạt động thực tế trên Google AI Studio)
+        CHAT_MODELS = [
+            "gemini-3.5-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-3.6-flash",
+            "gemini-3.7-flash",
+            "gemini-3.8-flash",
+            "gemini-flash-latest",
+            "gemini-flash-lite-latest"
+        ]
+        last_error = None
+
+        for model_name in CHAT_MODELS:
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=contents,
+                    config=genai_types.GenerateContentConfig(
+                        system_instruction=CHATBOT_SYSTEM_PROMPT,
+                        temperature=0.7,
+                        # Tắt thinking ngầm để không ngốn hết token budget gây đứt câu giữa chừng
+                        thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
+                        max_output_tokens=1500  # Đủ dài để trả lời hoàn chỉnh, trọn vẹn câu
+                    )
+                )
+
+
+                if response and response.text:
+                    print(f"[ChatBot] Thanh cong voi model: {model_name}")
+                    return {"reply": response.text.strip(), "status": "success"}
+                else:
+                    print(f"[ChatBot] Model {model_name} tra ve phan hoi rong, thu model ke tiep...")
+                    continue
+
+            except Exception as model_err:
+                err_str = str(model_err)
+                last_error = model_err
+                print(f"[ChatBot] Model {model_name} loi: {err_str[:120]}")
+
+                # Quota hết → chuyển model ngay
+                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "quota" in err_str.lower():
+                    continue
+                # Lỗi khác → cũng thử model kế tiếp
+                continue
+
+        print(f"[ChatBot] Tat ca model deu that bai. Loi cuoi: {last_error}")
+        return {
+            "reply": "Chatbot đang quá tải. Vui lòng thử lại sau ít phút hoặc liên hệ Zalo 0834.490.939.",
+            "status": "error"
+        }
+
+    except Exception as e:
+        print(f"[ChatBot] Loi khoi tao client Gemini: {e}")
+        return {
+            "reply": "Xin lỗi, chatbot gặp sự cố kỹ thuật. Vui lòng liên hệ hỗ trợ qua Zalo 0834.490.939.",
+            "status": "error"
+        }
 

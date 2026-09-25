@@ -142,11 +142,19 @@ def deduct_credit_from_user(user_id: str, jwt_token: Optional[str] = None) -> Di
 
     # 2. Fallback kiểm tra và cập nhật trực tiếp trên bảng profiles
     try:
+        from datetime import date
+        today_str = str(date.today())
+
         prof_res = supabase.table("profiles").select("daily_credits, last_reset_date, subscription_tier").eq("id", user_id).execute()
         if not prof_res.data or len(prof_res.data) == 0:
             # Nếu user vừa tạo mà chưa có dòng profiles, tạo mặc định 2 lượt (đã tính lần này)
             try:
-                supabase.table("profiles").upsert({"id": user_id, "daily_credits": 2, "subscription_tier": "free"}).execute()
+                supabase.table("profiles").upsert({
+                    "id": user_id,
+                    "daily_credits": 2,
+                    "subscription_tier": "free",
+                    "last_reset_date": today_str
+                }).execute()
             except Exception:
                 pass
             return {"success": True, "remaining": 2, "tier": "free"}
@@ -157,6 +165,13 @@ def deduct_credit_from_user(user_id: str, jwt_token: Optional[str] = None) -> Di
             return {"success": True, "remaining": 9999, "tier": "pro"}
 
         current_credits = prof.get("daily_credits")
+        last_reset = prof.get("last_reset_date")
+
+        # Kiểm tra tự động hồi phục 3 lượt nếu sang ngày mới
+        if not last_reset or str(last_reset) < today_str:
+            current_credits = 3
+            last_reset = today_str
+
         if current_credits is None:
             current_credits = 3
 
@@ -164,7 +179,10 @@ def deduct_credit_from_user(user_id: str, jwt_token: Optional[str] = None) -> Di
             return {"success": False, "reason": "out_of_credits", "remaining": 0, "tier": tier}
 
         new_credits = current_credits - 1
-        supabase.table("profiles").update({"daily_credits": new_credits}).eq("id", user_id).execute()
+        supabase.table("profiles").update({
+            "daily_credits": new_credits,
+            "last_reset_date": today_str
+        }).eq("id", user_id).execute()
         return {"success": True, "remaining": new_credits, "tier": tier}
     except Exception as e:
         print(f"Lỗi khi trừ lượt fallback: {e}")
@@ -173,19 +191,42 @@ def deduct_credit_from_user(user_id: str, jwt_token: Optional[str] = None) -> Di
 def get_user_profile(user_id: str, jwt_token: Optional[str] = None) -> Dict[str, Any]:
     """
     Lấy thông tin số lượt còn lại và gói của người dùng.
+    Tự động hồi phục 3 lượt nếu bước sang ngày mới.
     """
     supabase = get_supabase_client(jwt_token=jwt_token)
     if not supabase:
         return {"daily_credits": 3, "subscription_tier": "free"}
 
     try:
-        res = supabase.table("profiles").select("id, email, daily_credits, subscription_tier").eq("id", user_id).execute()
+        from datetime import date
+        today_str = str(date.today())
+
+        res = supabase.table("profiles").select("id, email, daily_credits, subscription_tier, last_reset_date").eq("id", user_id).execute()
         if res.data and len(res.data) > 0:
-            return res.data[0]
+            data = res.data[0]
+            tier = data.get("subscription_tier") or "free"
+            last_reset = data.get("last_reset_date")
+            credits = data.get("daily_credits")
+
+            # Tự động nạp lại 3 lượt nếu sang ngày mới cho gói Free
+            if tier != "pro" and (not last_reset or str(last_reset) < today_str):
+                credits = 3
+                try:
+                    supabase.table("profiles").update({
+                        "daily_credits": 3,
+                        "last_reset_date": today_str
+                    }).eq("id", user_id).execute()
+                    data["daily_credits"] = 3
+                    data["last_reset_date"] = today_str
+                except Exception as update_err:
+                    print(f"Lưu ý: Không thể cập nhật reset ngày: {update_err}")
+
+            return data
         return {"daily_credits": 3, "subscription_tier": "free"}
     except Exception as e:
         print(f"Lỗi khi đọc profile: {e}")
         return {"daily_credits": 3, "subscription_tier": "free"}
+
 
 # Bộ nhớ đệm đơn hàng dự phòng (giúp hệ thống hoạt động ngay cả khi người dùng chưa kịp chạy SQL tạo bảng transactions)
 pending_orders_cache: Dict[str, Dict[str, Any]] = {}
